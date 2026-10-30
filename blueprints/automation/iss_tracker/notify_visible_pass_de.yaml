@@ -1,0 +1,155 @@
+blueprint:
+  name: ISS-Überflug sichtbar – Benachrichtigung
+  description: >-
+    Sendet eine Push-Nachricht aufs Handy, kurz bevor die Internationale
+    Raumstation (ISS) von deinem Standort aus sichtbar ist, und optional eine
+    tägliche Vorschau, wenn in den nächsten 24 Stunden ein sichtbarer Überflug
+    ansteht. Benötigt die Integration ISS Tracker. Die Vorwarnzeit stellst du
+    in den Optionen der Integration ein („Vorwarnzeit“ bzw. „Advance notice“).
+  domain: automation
+  source_url: https://github.com/kedube/ha-iss-tracker/blob/main/blueprints/automation/iss_tracker/notify_visible_pass_de.yaml
+  input:
+    next_visible_pass:
+      name: Sensor „Nächster sichtbarer Überflug“
+      selector:
+        entity:
+          filter:
+            - integration: iss_tracker
+              domain: sensor
+              device_class: timestamp
+    visible_pass_soon:
+      name: Sensor „Sichtbarer Überflug in Kürze“
+      selector:
+        entity:
+          filter:
+            - integration: iss_tracker
+              domain: binary_sensor
+    notify_device:
+      name: Handy für die Benachrichtigung
+      description: Ein Gerät, auf dem die Home-Assistant-Companion-App läuft.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    daily_heads_up:
+      name: Tägliche Vorschau senden
+      description: >-
+        Zusätzlich zu einer festen Uhrzeit benachrichtigen, wenn in den
+        nächsten 24 Stunden ein sichtbarer Überflug ansteht.
+      default: true
+      selector:
+        boolean:
+    heads_up_time:
+      name: Uhrzeit der täglichen Vorschau
+      default: "16:00:00"
+      selector:
+        time:
+
+# The German version of notify_visible_pass.yaml: the same triggers,
+# conditions and actions, with German text (tests/test_blueprint.py checks
+# that the two stay in step).
+mode: queued
+
+triggers:
+  - trigger: state
+    entity_id: !input visible_pass_soon
+    from: "off"
+    to: "on"
+    id: soon
+  # With an advance notice longer than the gap between two passes (about 90
+  # minutes), "soon" stays on from one pass to the next; announce the next
+  # one when the pass sensor moves on to it. Waiting a second lets "soon"
+  # settle first; if it turned on after the move, its own trigger has
+  # already announced the pass. Setting not_from/not_to also ignores
+  # attribute changes.
+  - trigger: state
+    entity_id: !input next_visible_pass
+    not_from: [unknown, unavailable]
+    not_to: [unknown, unavailable]
+    for:
+      seconds: 1
+    id: soon_next
+  - trigger: time
+    at: !input heads_up_time
+    id: daily
+
+variables:
+  pass_sensor: !input next_visible_pass
+  soon_sensor: !input visible_pass_soon
+  daily_enabled: !input daily_heads_up
+  start_ts: "{{ as_timestamp(states(pass_sensor), 0) }}"
+  minutes_away: "{{ ((start_ts - as_timestamp(now())) / 60) | round(0) | int }}"
+  time_text: "{{ start_ts | timestamp_custom('%H:%M') }}"
+  # timestamp_custom('%A') names the weekday in English; %u is its number (Monday is 1).
+  day_text: >-
+    {% set d = (start_ts | timestamp_custom('%Y-%m-%d')) %}
+    {% if d == now().strftime('%Y-%m-%d') %}heute{% elif d == (now() + timedelta(days=1)).strftime('%Y-%m-%d') %}morgen{% else %}am {{ ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'][(start_ts | timestamp_custom('%u') | int) - 1] }}{% endif %}
+  # An unknown direction is shown as the sensor gives it.
+  details: >-
+    {% set dirs = {
+      'N': 'Norden', 'NNE': 'Nordnordosten', 'NE': 'Nordosten', 'ENE': 'Ostnordosten',
+      'E': 'Osten', 'ESE': 'Ostsüdosten', 'SE': 'Südosten', 'SSE': 'Südsüdosten',
+      'S': 'Süden', 'SSW': 'Südsüdwesten', 'SW': 'Südwesten', 'WSW': 'Westsüdwesten',
+      'W': 'Westen', 'WNW': 'Westnordwesten', 'NW': 'Nordwesten', 'NNW': 'Nordnordwesten'} %}
+    {% set a = namespace(
+      start_dir=state_attr(pass_sensor, 'start_direction'),
+      start_el=state_attr(pass_sensor, 'start_elevation') | float(0),
+      peak_dir=state_attr(pass_sensor, 'peak_direction'),
+      peak_el=state_attr(pass_sensor, 'peak_elevation') | float(0),
+      end_dir=state_attr(pass_sensor, 'end_direction'),
+      shadow=state_attr(pass_sensor, 'disappears_into_shadow'),
+      seconds=state_attr(pass_sensor, 'duration_seconds') | float(0),
+      mag=state_attr(pass_sensor, 'magnitude')) %}
+    Erscheint im {{ dirs.get(a.start_dir, a.start_dir) }} ({{ a.start_el | round(0) | int }}° hoch),
+    steigt auf {{ a.peak_el | round(0) | int }}° im {{ dirs.get(a.peak_dir, a.peak_dir) }}
+    und {% if a.shadow %}taucht im {{ dirs.get(a.end_dir, a.end_dir) }} in den Erdschatten ein{% else %}geht im {{ dirs.get(a.end_dir, a.end_dir) }} unter{% endif %}.
+    Sichtbar für {{ ((a.seconds / 60) | round(1)) | string | replace('.', ',') }} Min.{% if a.mag is not none %}, Helligkeit {{ a.mag | string | replace('.', ',') }}.{% endif %}
+
+conditions:
+  - condition: template
+    value_template: "{{ start_ts > 0 }}"
+  - condition: or
+    conditions:
+      - condition: trigger
+        id: soon
+      - condition: and
+        conditions:
+          - condition: trigger
+            id: soon_next
+          - condition: state
+            entity_id: !input visible_pass_soon
+            state: "on"
+          # A later pass, not the same one refined by a few seconds (passes
+          # are at least 85 minutes apart), one still to come, and one that
+          # "soon" has not announced already.
+          - condition: template
+            value_template: >-
+              {{ trigger.from_state is not none and trigger.to_state is not none
+                 and as_timestamp(trigger.to_state.state, 0)
+                   - as_timestamp(trigger.from_state.state, 0) > 1800
+                 and start_ts > as_timestamp(now())
+                 and states[soon_sensor].last_changed < trigger.to_state.last_changed }}
+      - condition: and
+        conditions:
+          - condition: trigger
+            id: daily
+          - condition: template
+            value_template: "{{ daily_enabled and 0 < start_ts - as_timestamp(now()) < 86400 }}"
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: [soon, soon_next]
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "ISS in {{ minutes_away }} Min. sichtbar"
+            message: "Schau um {{ time_text }} Uhr nach oben. {{ details }}"
+    default:
+      - domain: mobile_app
+        type: notify
+        device_id: !input notify_device
+        title: "ISS {{ day_text }} um {{ time_text }} Uhr sichtbar"
+        message: "{{ details }}"

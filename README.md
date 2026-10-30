@@ -294,6 +294,16 @@ heads-up:
 > Look up at 7:15 PM. Appears in the WNW (10° up), climbs to 67° in the SSW, fades into
 > Earth's shadow in the ESE. Visible for 6.2 min, brightness -3.4.
 
+A German version sends the same notifications in German, with 24-hour times and the
+directions written out:
+
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fkedube%2Fha-iss-tracker%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fiss_tracker%2Fnotify_visible_pass_de.yaml)
+
+> **ISS in 15 Min. sichtbar**
+> Schau um 19:15 Uhr nach oben. Erscheint im Westnordwesten (10° hoch), steigt auf 67° im
+> Südsüdwesten und taucht im Ostsüdosten in den Erdschatten ein. Sichtbar für 6,2 Min.,
+> Helligkeit -3,4.
+
 Or build your own; the timestamp sensor works directly with a time trigger:
 
 ```yaml
@@ -424,6 +434,11 @@ translate the values and keep each `{placeholder}` as it is. Then add the code t
 `LANGUAGES` in `frontend/iss-i18n.js`. The JS tests check that every language has every
 key, the same placeholders and the plural forms it needs; the Python tests check the
 calendar's words the same way.
+
+Blueprints have no translations, so the notification blueprint has one file per language
+in `blueprints/automation/iss_tracker/` (`notify_visible_pass_de.yaml` is German). A new
+one changes only the wording: `tests/test_blueprint.py` checks that its triggers,
+conditions and actions match the English file's.
 
 ### Releasing
 

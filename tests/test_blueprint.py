@@ -1,4 +1,4 @@
-"""Render the notification blueprint's templates with Home Assistant's engine."""
+"""Render the notification blueprints' templates with Home Assistant's engine."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.template import Template
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util, yaml as yaml_util
+import pytest
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_capture_events,
@@ -25,8 +26,15 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 
 from custom_components.iss_tracker.const import DOMAIN
 from custom_components.iss_tracker.elements import CELESTRAK_URL
+from custom_components.iss_tracker.predict import azimuth_to_compass
 
-BLUEPRINT = Path(__file__).parents[1] / "blueprints/automation/iss_tracker/notify_visible_pass.yaml"
+BLUEPRINTS = Path(__file__).parents[1] / "blueprints/automation/iss_tracker"
+BLUEPRINT = BLUEPRINTS / "notify_visible_pass.yaml"
+GERMAN = BLUEPRINTS / "notify_visible_pass_de.yaml"
+# One file per language: the same blueprint with other wording.
+TRANSLATIONS = sorted(BLUEPRINTS.glob("notify_visible_pass_*.yaml"))
+# The variables that only word the notifications.
+TEXT_VARIABLES = {"time_text", "day_text", "details"}
 PASS_SENSOR = "sensor.home_next_visible_pass"
 SOON_SENSOR = "binary_sensor.home_visible_pass_soon"
 ATTRIBUTES = {
@@ -41,9 +49,9 @@ ATTRIBUTES = {
 }
 
 
-def _automation() -> dict:
+def _automation(path: Path = BLUEPRINT) -> dict:
     blueprint = Blueprint(
-        yaml_util.load_yaml_dict(BLUEPRINT),
+        yaml_util.load_yaml_dict(path),
         expected_domain="automation",
         schema=BLUEPRINT_SCHEMA,
     )
@@ -119,6 +127,82 @@ async def test_blueprint_without_a_pass(hass: HomeAssistant) -> None:
     variables = cv.SCRIPT_VARIABLES_SCHEMA(config["variables"]).async_render(hass, {})
     first_condition = config["conditions"][0]["value_template"]
     assert Template(first_condition, hass).async_render(variables) is False
+
+
+def _logic(path: Path) -> dict:
+    """A blueprint without its wording: what every language keeps the same."""
+    config = yaml_util.load_yaml_dict(path)
+    meta = config.pop("blueprint")
+    for name in TEXT_VARIABLES:
+        del config["variables"][name]
+    actions = config["actions"][0]
+    for sequence in (actions["choose"][0]["sequence"], actions["default"]):
+        del sequence[0]["title"], sequence[0]["message"]
+    inputs = {
+        key: {k: v for k, v in value.items() if k not in ("name", "description")}
+        for key, value in meta["input"].items()
+    }
+    return {**config, "domain": meta["domain"], "input": inputs}
+
+
+@pytest.mark.parametrize("path", TRANSLATIONS, ids=lambda path: path.stem)
+def test_translations_keep_the_logic(path: Path) -> None:
+    assert _logic(path) == _logic(BLUEPRINT)
+    source_url = yaml_util.load_yaml_dict(path)["blueprint"]["source_url"]
+    assert source_url.endswith(f"/blob/main/blueprints/automation/iss_tracker/{path.name}")
+
+
+async def test_german_blueprint_messages(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    # A Saturday.
+    now = datetime(2026, 10, 10, 19, 0, tzinfo=dt_util.get_default_time_zone())
+    freezer.move_to(now)
+
+    def render(start: datetime, **attributes: Any) -> dict[str, Any]:
+        hass.states.async_set(
+            PASS_SENSOR, start.isoformat(), {"start": start, **ATTRIBUTES, **attributes}
+        )
+        return cv.SCRIPT_VARIABLES_SCHEMA(config["variables"]).async_render(hass, {})
+
+    config = _automation(GERMAN)
+    soon = config["actions"][0]["choose"][0]["sequence"][0]
+    daily = config["actions"][0]["default"][0]
+
+    variables = render(now + timedelta(minutes=15))
+    assert variables["details"] == (
+        "Erscheint im Westnordwesten (10° hoch), steigt auf 67° im Südsüdwesten und taucht im "
+        "Ostsüdosten in den Erdschatten ein. Sichtbar für 6,2 Min., Helligkeit -3,4."
+    )
+    assert Template(soon["title"], hass).async_render(variables) == "ISS in 15 Min. sichtbar"
+    assert Template(soon["message"], hass).async_render(variables) == (
+        f"Schau um 19:15 Uhr nach oben. {variables['details']}"
+    )
+    assert Template(daily["title"], hass).async_render(variables) == (
+        "ISS heute um 19:15 Uhr sichtbar"
+    )
+
+    for start, title in (
+        (now + timedelta(hours=9, minutes=10), "ISS morgen um 04:10 Uhr sichtbar"),
+        (now + timedelta(days=1, hours=9, minutes=10), "ISS am Montag um 04:10 Uhr sichtbar"),
+    ):
+        variables = render(start)
+        assert Template(daily["title"], hass).async_render(variables) == title
+
+    # A pass that sets in sunlight, with no brightness and a direction the list lacks.
+    variables = render(
+        now + timedelta(minutes=15),
+        end_direction="XYZ",
+        disappears_into_shadow=False,
+        magnitude=None,
+    )
+    assert variables["details"].endswith("und geht im XYZ unter. Sichtbar für 6,2 Min.")
+
+
+def test_german_blueprint_names_every_direction() -> None:
+    names = re.findall(r"'(\w+)': '\w+'", GERMAN.read_text())
+    assert sorted(names) == sorted({azimuth_to_compass(i * 22.5) for i in range(16)})
 
 
 async def test_back_to_back_passes_are_both_announced(
@@ -266,12 +350,19 @@ async def test_soon_next_ignores_reloads_re_adds_and_write_order(
     )
 
 
+@pytest.mark.parametrize(
+    ("path", "no_duration"),
+    [(BLUEPRINT, "Visible for 0.0 min"), (GERMAN, "Sichtbar für 0,0 Min.")],
+    ids=["en", "de"],
+)
 async def test_blueprint_reads_real_attributes(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
     freezer: FrozenDateTimeFactory,
     reference: dict[str, Any],
     omm_xml: bytes,
+    path: Path,
+    no_duration: str,
 ) -> None:
     """Every attribute the blueprint reads exists on the integration's sensor."""
     freezer.move_to(datetime.fromisoformat(reference["start"]))
@@ -285,12 +376,12 @@ async def test_blueprint_reads_real_attributes(
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    read = set(re.findall(r"state_attr\(pass_sensor, '(\w+)'\)", BLUEPRINT.read_text()))
+    read = set(re.findall(r"state_attr\(pass_sensor, '(\w+)'\)", path.read_text()))
     assert read >= {"duration_seconds", "magnitude", "disappears_into_shadow"}
     state = hass.states.get(PASS_SENSOR)
     assert read <= state.attributes.keys()
     assert hass.states.get(SOON_SENSOR) is not None
 
-    variables = cv.SCRIPT_VARIABLES_SCHEMA(_automation()["variables"]).async_render(hass, {})
-    assert "Visible for 0.0 min" not in variables["details"]
+    variables = cv.SCRIPT_VARIABLES_SCHEMA(_automation(path)["variables"]).async_render(hass, {})
+    assert no_duration not in variables["details"]
     assert variables["start_ts"] > 0
