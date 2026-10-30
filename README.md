@@ -97,15 +97,26 @@ whereas the real station fades over a few seconds.
 
 ## Installation
 
-### HACS (recommended)
+### Marketplace or HACS (recommended)
 
-This repository is not in the HACS default store, so add it to HACS as a custom
-repository. The quickest way is this button, which opens it in HACS on your Home
-Assistant:
+Home Assistant 2026.11 replaced HACS with its built-in **Marketplace**. This repository
+is not in the Marketplace catalog (or the HACS default store), so add it as a custom
+repository. The quickest way is this button, which opens it in the Marketplace (in HACS
+before 2026.11) on your Home Assistant:
 
 [![Open your Home Assistant instance and open this repository inside HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=kedube&repository=ha-iss-tracker&category=integration)
 
-Or add it by hand:
+Or add it by hand. On Home Assistant 2026.11 or later:
+
+1. Go to **Settings → Marketplace** and select **Add from link** (top right).
+2. Under **GitHub link**, enter `https://github.com/kedube/ha-iss-tracker` and select
+   **Add**. The first time, the Marketplace asks you to connect GitHub, which it needs
+   for custom repositories.
+3. Open **ISS Tracker**, select **Install**, and confirm.
+4. Restart Home Assistant if a repair asks you to.
+5. [Add the integration](#setup).
+
+On older versions, with HACS:
 
 1. In Home Assistant, open **HACS**.
 2. Open the menu (**⋮**, top right) and choose **Custom repositories**.
@@ -114,6 +125,9 @@ Or add it by hand:
 4. Search HACS for **ISS Tracker**, open it and select **Download**.
 5. Restart Home Assistant.
 6. [Add the integration](#setup).
+
+Installed it with HACS already? Updating Home Assistant to 2026.11 moves it to the
+Marketplace by itself: it stays installed and keeps getting updates.
 
 Installed it before 1.02, when it was called **ISS Pass Prediction**? The rename gave
 it a new domain (`iss_tracker`), so it can't take over the old entries. Delete the
@@ -129,9 +143,10 @@ use them, or change their entity IDs back under **Settings → Entities**. Re-im
 
 ### Updating
 
-HACS offers each new release as an update and shows its release notes. Install the
-update, restart Home Assistant, and then reload any dashboards you have open so they
-load the new version of the globe.
+The Marketplace (HACS before 2026.11) offers each new release as an update under
+**Settings → Updates** and shows its release notes. Install the update, restart Home
+Assistant, and then reload any dashboards you have open so they load the new version
+of the globe.
 
 ### Manual installation
 

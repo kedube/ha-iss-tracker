@@ -15,9 +15,11 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
+from homeassistant.helpers.selector import LocationSelector
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+import voluptuous as vol
 
 from custom_components.iss_tracker.const import (
     CONF_ALERT_LEAD_MINUTES,
@@ -44,6 +46,27 @@ OPTIONS = {
     CONF_FORECAST_DAYS: 7,
     CONF_ALERT_LEAD_MINUTES: 30,
 }
+
+
+def _selector_checks_range() -> bool:
+    """Whether the location selector refuses coordinates out of range itself.
+
+    It does from Home Assistant 2026.11: the flow never sees them, and the form
+    shows the selector's error. Its map brings a longitude into range before
+    sending it. Older versions leave both to the flow, which refuses a latitude
+    and brings a longitude into range.
+    """
+    try:
+        LocationSelector()({CONF_LATITUDE: 95.0, CONF_LONGITUDE: 0.0})
+    except vol.Invalid:
+        return True
+    return False
+
+
+SELECTOR_CHECKS_RANGE = _selector_checks_range()
+WRAPPED = pytest.mark.skipif(
+    SELECTOR_CHECKS_RANGE, reason="the location selector refuses longitudes beyond 180"
+)
 
 
 def _user_input(lat: float = 42.36012345, lon: float = -71.0589) -> dict:
@@ -85,19 +108,25 @@ async def test_duplicate_location_aborts(hass: HomeAssistant) -> None:
 @pytest.mark.parametrize("latitude", [423.601, -95.0, 90.0001, float("nan")])
 async def test_out_of_range_latitude_is_refused(hass: HomeAssistant, latitude: float) -> None:
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], _user_input(lat=latitude)
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {CONF_LOCATION: "invalid_location"}
-    # What was typed is kept, so only the location needs correcting.
-    suggested = {
-        str(key): key.description["suggested_value"]
-        for key in result["data_schema"].schema
-        if key.description and "suggested_value" in key.description
-    }
-    assert suggested[CONF_NAME] == "Backyard"
-    assert suggested[CONF_ELEVATION] == 12
+    if SELECTOR_CHECKS_RANGE:
+        with pytest.raises(InvalidData):
+            await hass.config_entries.flow.async_configure(
+                result["flow_id"], _user_input(lat=latitude)
+            )
+    else:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], _user_input(lat=latitude)
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {CONF_LOCATION: "invalid_location"}
+        # What was typed is kept, so only the location needs correcting.
+        suggested = {
+            str(key): key.description["suggested_value"]
+            for key in result["data_schema"].schema
+            if key.description and "suggested_value" in key.description
+        }
+        assert suggested[CONF_NAME] == "Backyard"
+        assert suggested[CONF_ELEVATION] == 12
 
     with patch("custom_components.iss_tracker.async_setup_entry", return_value=True):
         result = await hass.config_entries.flow.async_configure(
@@ -110,7 +139,13 @@ async def test_out_of_range_latitude_is_refused(hass: HomeAssistant, latitude: f
 
 @pytest.mark.parametrize(
     ("longitude", "expected"),
-    [(288.94, -71.06), (-431.06, -71.06), (180.0, 180.0), (-180.0, -180.0), (179.99999, 179.99999)],
+    [
+        pytest.param(288.94, -71.06, marks=WRAPPED),
+        pytest.param(-431.06, -71.06, marks=WRAPPED),
+        (180.0, 180.0),
+        (-180.0, -180.0),
+        (179.99999, 179.99999),
+    ],
 )
 async def test_longitude_is_normalised(
     hass: HomeAssistant, longitude: float, expected: float
@@ -126,6 +161,7 @@ async def test_longitude_is_normalised(
     assert result["result"].unique_id == f"42.360_{expected:.3f}"
 
 
+@WRAPPED
 @pytest.mark.parametrize("longitude", [288.94, -431.06])
 async def test_wrapped_longitude_is_a_duplicate(hass: HomeAssistant, longitude: float) -> None:
     MockConfigEntry(domain=DOMAIN, unique_id="42.360_-71.060").add_to_hass(hass)
@@ -156,14 +192,22 @@ async def test_reconfigure_moves_the_location(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reconfigure"
 
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], _reconfigure_input(95, -71.06)
-    )
-    assert result["errors"] == {CONF_LOCATION: "invalid_location"}
+    if SELECTOR_CHECKS_RANGE:
+        with pytest.raises(InvalidData):
+            await hass.config_entries.flow.async_configure(
+                result["flow_id"], _reconfigure_input(95, -71.06)
+            )
+    else:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], _reconfigure_input(95, -71.06)
+        )
+        assert result["errors"] == {CONF_LOCATION: "invalid_location"}
 
+    # Typed 0-360 where the selector lets that through.
+    longitude = -71.05 if SELECTOR_CHECKS_RANGE else 288.95
     with patch("custom_components.iss_tracker.async_setup_entry", return_value=True) as setup:
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], _reconfigure_input(42.35, 288.95)
+            result["flow_id"], _reconfigure_input(42.35, longitude)
         )
         await hass.async_block_till_done()
     assert result["type"] is FlowResultType.ABORT

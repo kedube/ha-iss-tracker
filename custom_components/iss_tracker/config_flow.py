@@ -83,9 +83,11 @@ def _number(minimum: float, maximum: float, step: float, unit: str | None = None
 def _coordinates(location: dict[str, Any]) -> tuple[float, float] | None:
     """Latitude and longitude from the location selector, or None when out of range.
 
-    The selector accepts any number. Longitudes written 0-360 (or wrapped
-    further) are brought into -180..180 so that the same place is recognised
-    as a duplicate whichever way it was typed.
+    Before Home Assistant 2026.11 the selector accepts any number; from
+    2026.11 it refuses coordinates out of range before the flow sees them.
+    Longitudes written 0-360 (or wrapped further) are brought into -180..180
+    so that the same place is recognised as a duplicate whichever way it was
+    typed.
     """
     latitude = round(float(location[CONF_LATITUDE]), 5)
     longitude = round(float(location[CONF_LONGITUDE]), 5)

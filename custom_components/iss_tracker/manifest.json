@@ -1,6 +1,9 @@
 {
   "domain": "iss_tracker",
   "name": "ISS Tracker",
+  "categories": [
+    "vehicles_transport.flights"
+  ],
   "codeowners": [
     "@kedube"
   ],
